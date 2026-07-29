@@ -58,6 +58,9 @@ jobs:
           sed -i "s/#define GamePackageName3 \".*\"/#define GamePackageName3 \"${{ inputs.package_name3 }}\"/" module/src/main/cpp/game.h
           echo "Package set to: ${{ inputs.package_name }}"
 
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
+
       - name: Build with Gradle
         run: |
           export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ inputs.ndk_version }}
