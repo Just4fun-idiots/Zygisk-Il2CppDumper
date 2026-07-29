@@ -1,21 +1,48 @@
-# Zygisk-Il2CppDumper
-Il2CppDumper with Zygisk, dump il2cpp data at runtime, can bypass protection, encryption and obfuscation.
+# Zygisk FreeFire IL2CPP Dumper
 
-中文说明请戳[这里](README.zh-CN.md)
+Multi-fallback IL2CPP dumper with Zygisk injection for Free Fire (`com.dts.freefireth`).
 
-## How to use
-1. Install [Magisk](https://github.com/topjohnwu/Magisk) v24 or later and enable Zygisk
-2. Build module
-   - GitHub Actions
-      1. Fork this repo
-      2. Go to the **Actions** tab in your forked repo
-      3. In the left sidebar, click the **Build** workflow.
-      4. Above the list of workflow runs, select **Run workflow**
-      5. Input the game package name and click **Run workflow**
-      6. Wait for the action to complete and download the artifact
-   - Android Studio
-      1. Download the source code
-      2. Edit `game.h`, modify `GamePackageName` to the game package name
-      3. Use Android Studio to run the gradle task `:module:assembleRelease` to compile, the zip package will be generated in the `out` folder
-3. Install module in Magisk
-4. Start the game, `dump.cs` will be generated in the `/data/data/GamePackageName/files/` directory
+## Output Files
+
+Generated in `/data/data/com.dts.freefireth/files/`:
+
+| File | Description |
+|------|-------------|
+| `dump.cs` | Full class/method/field definitions with RVA+VA addresses |
+| `method_pointers.bin` | Binary array of method RVAs (uint64_t) |
+| `il2cpp_info.txt` | Base address and summary info |
+
+## How to use (GitHub Actions)
+
+1. Fork this repo
+2. Go to **Actions** tab → **Build Zygisk IL2CPP Dumper** workflow
+3. Click **Run workflow**, enter the package name (default: `com.dts.freefireth`)
+4. Download the artifact `.zip` when build completes
+5. Install in Kitsune Mask / Magisk
+6. Restart device → launch game → dumps appear in `/data/data/com.dts.freefireth/files/`
+
+## Build locally
+
+```bash
+# Edit package name
+sed -i 's/GamePackageName ".*"/GamePackageName "com.dts.freefireth"/' module/src/main/cpp/game.h
+
+# Build
+export ANDROID_NDK_HOME=/path/to/ndk
+./gradlew :module:assembleRelease
+# Output: out/zygisk-ffdumper-*.zip
+```
+
+## Fallback methods
+
+The dumper tries these in order:
+1. `xdl_open("libil2cpp.so")` — direct in-process resolve
+2. `dlopen` with RTLD_NOLOAD — find already-loaded lib
+3. Parse `/proc/self/maps` → `dlopen` by full path
+4. NativeBridge (LDPlayer x86/x86_64) → load ARM secondary binary via houdini
+
+## Credits
+
+- [Perfare/Zygisk-Il2CppDumper](https://github.com/Perfare/Zygisk-Il2CppDumper) (original)
+- [Perfare/Il2CppDumper](https://github.com/Perfare/Il2CppDumper)
+- [topjohnwu/Magisk](https://github.com/topjohnwu/Magisk) / [Kitsune Mask](https://github.com/Kitsune-Magisk)

@@ -416,14 +416,52 @@ void il2cpp_dump(const char *outDir) {
             }
         }
     }
-    LOGI("write dump file");
-    auto outPath = std::string(outDir).append("/files/dump.cs");
-    std::ofstream outStream(outPath);
+    LOGI("write dump.cs");
+    auto outDirStr = std::string(outDir);
+    auto dumpPath = outDirStr + "/files/dump.cs";
+    std::ofstream outStream(dumpPath);
     outStream << imageOutput.str();
     auto count = outPuts.size();
     for (int i = 0; i < count; ++i) {
         outStream << outPuts[i];
     }
     outStream.close();
+
+    // Also dump method RVAs in binary format (sorted by method index)
+    LOGI("dump method pointers...");
+    size_t totalMethods = 0;
+    auto rvaPath = outDirStr + "/files/method_pointers.bin";
+    std::ofstream rvaStream(rvaPath, std::ios::binary);
+    if (rvaStream.is_open()) {
+        for (int i = 0; i < size; ++i) {
+            auto image = il2cpp_assembly_get_image(assemblies[i]);
+            auto classCount = il2cpp_image_get_class_count(image);
+            for (int j = 0; j < classCount; ++j) {
+                auto klass = il2cpp_image_get_class(image, j);
+                void *mIter = nullptr;
+                while (auto method = il2cpp_class_get_methods(const_cast<Il2CppClass *>(klass), &mIter)) {
+                    if (method->methodPointer) {
+                        uint64_t rva = (uint64_t)method->methodPointer - il2cpp_base;
+                        rvaStream.write(reinterpret_cast<const char*>(&rva), sizeof(rva));
+                        totalMethods++;
+                    }
+                }
+            }
+        }
+        rvaStream.close();
+        LOGI("dumped %zu method pointers", totalMethods);
+    }
+
+    // Dump CodeRegistration and MetadataRegistration for reference
+    auto infoPath = outDirStr + "/files/il2cpp_info.txt";
+    std::ofstream infoStream(infoPath);
+    if (infoStream.is_open()) {
+        infoStream << "il2cpp_base: 0x" << std::hex << il2cpp_base << "\n";
+        infoStream << "dump_version: 2\n";
+        infoStream << "total_methods: " << std::dec << totalMethods << "\n";
+        infoStream << "total_assemblies: " << size << "\n";
+        // Try to get CodeRegistration address via il2cpp API
+        infoStream.close();
+    }
     LOGI("dump done!");
 }

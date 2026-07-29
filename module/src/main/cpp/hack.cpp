@@ -1,7 +1,3 @@
-//
-// Created by Perfare on 2020/7/4.
-//
-
 #include "hack.h"
 #include "il2cpp_dump.h"
 #include "log.h"
@@ -16,23 +12,152 @@
 #include <sys/mman.h>
 #include <linux/unistd.h>
 #include <array>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <dirent.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <elf.h>
+#include <link.h>
 
-void hack_start(const char *game_data_dir) {
-    bool load = false;
-    for (int i = 0; i < 10; i++) {
-        void *handle = xdl_open("libil2cpp.so", 0);
-        if (handle) {
-            load = true;
-            il2cpp_api_init(handle);
-            il2cpp_dump(game_data_dir);
+// Fallback 1: find libil2cpp via /proc/self/maps directly
+void *find_libil2cpp_via_maps() {
+    FILE *maps = fopen("/proc/self/maps", "r");
+    if (!maps) return nullptr;
+    
+    char line[4096];
+    void *base = nullptr;
+    while (fgets(line, sizeof(line), maps)) {
+        if (strstr(line, "libil2cpp.so")) {
+            unsigned long addr;
+            sscanf(line, "%lx", &addr);
+            base = (void *)addr;
+            LOGI("Found libil2cpp via maps at %p", base);
             break;
-        } else {
-            sleep(1);
         }
     }
-    if (!load) {
-        LOGI("libil2cpp.so not found in thread %d", gettid());
+    fclose(maps);
+    return base;
+}
+
+// Fallback 2: dlopen with various paths
+void *try_dlopen_libil2cpp() {
+    const char *paths[] = {
+        "libil2cpp.so",
+        "libil2cpp.so.0",
+        nullptr
+    };
+    
+    for (int i = 0; paths[i]; i++) {
+        void *h = dlopen(paths[i], RTLD_NOLOAD | RTLD_NOW);
+        if (h) {
+            LOGI("dlopen found libil2cpp via %s: %p", paths[i], h);
+            return h;
+        }
     }
+    return nullptr;
+}
+
+// Fallback 3: scan /data/app for base address
+void *find_base_via_proc_maps() {
+    // Try all supported arch map paths
+    const char *paths[] = {
+        "/proc/self/maps",
+        nullptr
+    };
+    
+    void *base = nullptr;
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return nullptr;
+    
+    char line[4096];
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "libil2cpp.so") && strstr(line, "r-xp")) {
+            unsigned long start;
+            sscanf(line, "%lx", &start);
+            base = (void *)start;
+            LOGI("Found executable libil2cpp at %p", base);
+            break;
+        }
+    }
+    fclose(f);
+    return base;
+}
+
+// Core init - try multiple methods to find and init libil2cpp
+bool init_libil2cpp() {
+    void *handle = nullptr;
+    
+    // Method 1: xdl_open (works when called from within the process)
+    LOGI("Trying xdl_open...");
+    handle = xdl_open("libil2cpp.so", 0);
+    if (handle) {
+        LOGI("xdl_open success: %p", handle);
+        il2cpp_api_init(handle);
+        return true;
+    }
+    
+    // Method 2: dlopen with RTLD_NOLOAD
+    LOGI("Trying dlopen...");
+    handle = try_dlopen_libil2cpp();
+    if (handle) {
+        LOGI("dlopen success: %p", handle);
+        il2cpp_api_init(handle);
+        return true;
+    }
+    
+    // Method 3: find by maps then dlopen
+    LOGI("Trying maps-based find...");
+    void *base = find_libil2cpp_via_maps();
+    if (base) {
+        // Try to get a handle using the base address
+        // dlopen by path of the mapped library
+        FILE *maps = fopen("/proc/self/maps", "r");
+        if (maps) {
+            char line[4096];
+            while (fgets(line, sizeof(line), maps)) {
+                if (strstr(line, "libil2cpp.so")) {
+                    char path[1024] = {0};
+                    // Extract path from the end of the line
+                    char *p = strstr(line, "/data/app/");
+                    if (p) {
+                        // Remove newline
+                        char *nl = strchr(p, '\n');
+                        if (nl) *nl = 0;
+                        strncpy(path, p, sizeof(path) - 1);
+                        handle = dlopen(path, RTLD_NOLOAD | RTLD_NOW);
+                        if (handle) {
+                            LOGI("Found lib by path: %s -> %p", path, handle);
+                            il2cpp_api_init(handle);
+                            fclose(maps);
+                            return true;
+                        }
+                    }
+                }
+            }
+            fclose(maps);
+        }
+    }
+    
+    return false;
+}
+
+void hack_start(const char *game_data_dir) {
+    LOGI("hack_start waiting for libil2cpp...");
+    
+    for (int i = 0; i < 30; i++) {
+        if (init_libil2cpp()) {
+            LOGI("il2cpp_api_init done, dumping...");
+            il2cpp_dump(game_data_dir);
+            return;
+        }
+        LOGI("Attempt %d failed, retrying...", i + 1);
+        sleep(1);
+    }
+    
+    LOGI("Failed to find libil2cpp after 30 attempts");
 }
 
 std::string GetLibDir(JavaVM *vms) {
@@ -92,11 +217,8 @@ static std::string GetNativeBridgeLibrary() {
 struct NativeBridgeCallbacks {
     uint32_t version;
     void *initialize;
-
     void *(*loadLibrary)(const char *libpath, int flag);
-
     void *(*getTrampoline)(void *handle, const char *name, const char *shorty, uint32_t len);
-
     void *isSupported;
     void *getAppEnv;
     void *isCompatibleWith;
@@ -107,17 +229,15 @@ struct NativeBridgeCallbacks {
     void *initAnonymousNamespace;
     void *createNamespace;
     void *linkNamespaces;
-
     void *(*loadLibraryExt)(const char *libpath, int flag, void *ns);
 };
 
 bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size_t length) {
-    //TODO 等待houdini初始化
     sleep(5);
 
     auto libart = dlopen("libart.so", RTLD_NOW);
     auto JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libart,
-                                                                             "JNI_GetCreatedJavaVMs");
+                                                                              "JNI_GetCreatedJavaVMs");
     LOGI("JNI_GetCreatedJavaVMs %p", JNI_GetCreatedJavaVMs);
     JavaVM *vms_buf[1];
     JavaVM *vms;

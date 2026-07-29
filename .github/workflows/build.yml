@@ -1,27 +1,77 @@
-name: Build
+name: Build Zygisk IL2CPP Dumper
+
 on:
   workflow_dispatch:
-      inputs:
-        package_name:
-          description: "Package name of the game:"
-          required: true
+    inputs:
+      package_name:
+        description: 'Game package name'
+        required: true
+        default: 'com.dts.freefireth'
+        type: string
+      package_name2:
+        description: 'Fallback package name 2'
+        required: false
+        default: ''
+        type: string
+      package_name3:
+        description: 'Fallback package name 3'
+        required: false
+        default: ''
+        type: string
+      ndk_version:
+        description: 'NDK version'
+        required: true
+        default: '25.2.9519653'
+        type: string
+
+env:
+  MODULE_NAME: ffdump
+  MAGISK_MODULE_ID: zygisk_ffdumper
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-java@v3
-      with:
-        distribution: temurin
-        java-version: 11
-        cache: gradle
-    - run: |
-        chmod +x ./gradlew
-        sed -i 's/moduleDescription = "/moduleDescription = "(${{ github.event.inputs.package_name }}) /g' module.gradle
-        sed -i "s/com.game.packagename/${{ github.event.inputs.package_name }}/g" module/src/main/cpp/game.h
-        ./gradlew :module:assembleRelease
-    - uses: actions/upload-artifact@v4
-      with:
-        name: zygisk-il2cppdumper
-        path: out/magisk_module_release/
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+
+      - name: Setup Android NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;${{ inputs.ndk_version }}" > /dev/null 2>&1
+          echo "NDK installed"
+
+      - name: Set package name
+        run: |
+          sed -i "s/#define GamePackageName \".*\"/#define GamePackageName \"${{ inputs.package_name }}\"/" module/src/main/cpp/game.h
+          sed -i "s/#define GamePackageName2 \".*\"/#define GamePackageName2 \"${{ inputs.package_name2 }}\"/" module/src/main/cpp/game.h
+          sed -i "s/#define GamePackageName3 \".*\"/#define GamePackageName3 \"${{ inputs.package_name3 }}\"/" module/src/main/cpp/game.h
+          echo "Package set to: ${{ inputs.package_name }}"
+
+      - name: Build with Gradle
+        run: |
+          export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ inputs.ndk_version }}
+          ./gradlew :module:assembleRelease --no-daemon
+
+      - name: Show output
+        run: |
+          ls -la out/
+          echo "Build artifacts:"
+          ls -la out/*.zip
+
+      - name: Upload module ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: zygisk-ffdumper-${{ inputs.package_name }}
+          path: out/*.zip
+          if-no-files-found: error
